@@ -1,0 +1,52 @@
+import os
+import tempfile
+import pandas as pd
+from q2_sra.sra import fastq_import
+
+
+projects = config['projects']
+output_dir = config['output_dir']
+threads = config['threads']
+
+rule all:
+    input:
+        expand({projects}.table.qza, projects=projects)
+
+rule download_sra:
+    input:
+        project_id = os.path.join(output_dir, "{project}"),
+        manifest = os.path.join(output_dir, "sra_manifest_{project}.txt")
+    run:
+        group = pd.read_table(manifest)
+        ids = ''.join(list(group['Run'].values))
+        for id_ in ids:
+            shell("fastq-dump --outdir {project}_sra --accession " + id_)
+
+rule import_sequences:
+    input:
+        project_id = os.path.join(output_dir, "{project}"),
+        sra_manifest_path = os.path.join(output_dir, "sra_manifest_{project}.txt")
+        fastq = os.path.join(output_dir, "{project}_sra")
+        q2_manifest_path = os.path.join(output_dir, "q2_manifest_{project}.txt")
+    run:
+        group = pd.read_table(manifest)
+        ids = ''.join(list(group['Run'].values))
+        q2_manifest, flag = single_seq_manifest(ids, fastq=input.fastq)
+        if flag is False:
+            manifest = paired_seq_manifest(ids, fastq=input.fastq)
+        q2_manifest.to_csv(q2_manifest_path, index=None, sep='\t')
+        fastq_import(ids, input.project_id, output_dir, q2_manifest_path, fastq)
+
+rule run_dada2:
+    input:
+        project_path = os.path.join(output_dir, "{project}"),
+    run:
+        shell(
+            """qiime dada2 denoise-single \
+            --i-demultiplexed-seqs {project_path}/{project}.demux.qza \
+            --p-n-threads {threads} \
+            --p-trim-left 0 \
+            --p-trunc-len 0 \
+            --o-representative-sequences {project_path}/{project}.rep_seqs.qza \
+            --o-table {project_path}.table.qza \
+            --o-denoising-stats /{project}.stats.qza """)
